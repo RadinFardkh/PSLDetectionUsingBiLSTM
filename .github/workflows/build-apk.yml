@@ -1,121 +1,105 @@
+```yaml
 # =============================================================================
 # .github/workflows/build_apk.yml
 #
-# GitHub Actions workflow that cross-compiles the PSL AI Kivy app into an
-# Android APK using the official Buildozer Docker image.
+# GitHub Actions workflow that builds the PSL AI Kivy app into an Android APK
+# using Buildozer.
 #
-# PLACE THIS FILE AT:
-#   <your_repo>/.github/workflows/build_apk.yml
+# PROJECT DIRECTORY:
+#   app/psl_app/
 #
-# HOW IT WORKS:
-#   1. GitHub spins up a free ubuntu-latest VM (2 vCPU, 7 GB RAM).
-#   2. The `ArtemSBulgakov/buildozer-action@v1` step pulls the official
-#      `kivy/buildozer` Docker image and runs `buildozer android debug`
-#      inside it. This handles all SDK/NDK downloads automatically.
-#   3. The finished .apk is uploaded as a GitHub Actions artifact, which
-#      you can download from the "Actions" tab of your repo.
+# IMPORTANT:
+#   The Buildozer project is located in app/psl_app, so Buildozer runs there.
 #
-# FIRST BUILD TIME: ~25–35 minutes (SDK/NDK download + full compile).
-# SUBSEQUENT BUILDS (with cache): ~8–12 minutes.
+# The application entry point is:
+#   app/psl_app/main.py
 #
-# FREE TIER LIMITS (github.com public repos): unlimited minutes.
-# FREE TIER LIMITS (private repos): 2,000 minutes/month per account.
-#
-# References:
-#   ArtemSBulgakov/buildozer-action: https://github.com/ArtemSBulgakov/buildozer-action
-#   Official Buildozer Docker image: https://github.com/kivy/buildozer
-#   GitHub Actions caching:          https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/caching-dependencies-to-speed-up-workflows
+# The Buildozer configuration is:
+#   app/psl_app/buildozer.spec
 # =============================================================================
 
 name: Build Android APK
 
-# ── Trigger conditions ─────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Trigger conditions
+# -----------------------------------------------------------------------------
 #
-# The workflow runs automatically when you push to `main`.
-# You can also trigger it manually from the GitHub UI via workflow_dispatch.
-# Remove `workflow_dispatch` if you only want automatic builds.
+# Automatically build when changes are pushed to the Android-app branch.
+# You can also manually start the workflow from GitHub Actions.
+#
 on:
   push:
     branches:
-      - main          # Run on every push to main
-  workflow_dispatch:  # Also allow manual trigger from the Actions tab
+      - Android-app
+  workflow_dispatch:
 
 jobs:
 
   build-android:
     name: Build APK (arm64-v8a)
 
-    # ubuntu-latest is currently ubuntu-22.04, which is what the official
-    # Buildozer Docker image is designed for.
     runs-on: ubuntu-latest
 
     steps:
 
-      # ── Step 1: Check out the repository ──────────────────────────────────
-      #
-      # actions/checkout clones your repo into the CI workspace so Buildozer
-      # can read main.py, buildozer.spec, and all source files.
+      # -----------------------------------------------------------------------
+      # Step 1: Check out the repository
+      # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Step 2: Cache the Buildozer global directory ───────────────────────
+      # -----------------------------------------------------------------------
+      # Step 2: Cache Buildozer global directory
+      # -----------------------------------------------------------------------
       #
-      # The .buildozer-global directory contains the downloaded Android SDK,
-      # NDK (~1.5 GB combined) and compiled p4a dependencies. Caching it
-      # reduces subsequent build time from ~30 min to ~8–12 min.
+      # The cache contains downloaded Android SDK/NDK and other dependencies.
+      # The cache is invalidated when buildozer.spec changes.
       #
-      # The cache key changes whenever buildozer.spec is modified (any
-      # change to requirements or SDK version triggers a fresh download).
-      #
-      # NOTE: GitHub caches up to 10 GB per repo. The SDK+NDK can reach
-      # ~3–4 GB, so keep an eye on your cache usage in repo Settings → Actions.
       - name: Cache Buildozer global directory
         uses: actions/cache@v4
         with:
-          # The Buildozer Docker image stores the global SDK/NDK here.
-          path: .buildozer-global
-          # Cache is invalidated any time buildozer.spec changes.
-          key: buildozer-global-${{ hashFiles('buildozer.spec') }}
-          # If the exact key misses, try any existing buildozer-global cache
-          # as a warm starting point (avoids re-downloading all of the NDK).
+          path: app/psl_app/.buildozer-global
+          key: buildozer-global-${{ hashFiles('app/psl_app/buildozer.spec') }}
           restore-keys: |
             buildozer-global-
 
-      # ── Step 3: Run Buildozer inside the official Docker image ─────────────
+      # -----------------------------------------------------------------------
+      # Step 3: Build the APK
+      # -----------------------------------------------------------------------
       #
-      # This action wraps `docker run kivy/buildozer buildozer android debug`.
-      # It also mounts the cache directories so they persist between runs.
+      # workdir is VERY IMPORTANT.
       #
-      # Parameters:
-      #   workdir          — where main.py and buildozer.spec live (. = repo root)
-      #   buildozer_version — 'stable' installs the latest PyPI release of buildozer.
-      #                       Pin to a specific tag (e.g. '1.5.0') for reproducible builds.
-      #   buildozer_command — 'android debug' produces an unsigned debug APK.
-      #                       Change to 'android release' when you want a signed release build.
+      # Buildozer will run inside:
+      #
+      #   app/psl_app/
+      #
+      # Therefore it will automatically use:
+      #
+      #   app/psl_app/main.py
+      #   app/psl_app/buildozer.spec
+      #
       - name: Build with Buildozer
         uses: ArtemSBulgakov/buildozer-action@v1
         id: buildozer
         with:
-          workdir: .
+          workdir: app/psl_app
           buildozer_version: stable
           buildozer_command: android debug
 
-      # ── Step 4: Upload the APK as a downloadable artifact ─────────────────
+      # -----------------------------------------------------------------------
+      # Step 4: Upload the APK
+      # -----------------------------------------------------------------------
       #
-      # The finished .apk lands in ./bin/ inside the Docker container, which
-      # is mounted back to the workspace. `steps.buildozer.outputs.filename`
-      # is an output variable set by the buildozer-action that contains the
-      # exact path to the built APK (e.g. bin/pslai-1.0.0-arm64-v8a-debug.apk).
+      # The APK generated by Buildozer is located in:
       #
-      # After the workflow completes, go to:
-      #   GitHub repo → Actions → <this workflow run> → Artifacts → "apk"
-      # and download the zip. Unzip it to get the .apk file.
+      #   app/psl_app/bin/
+      #
+      # It will be uploaded as a GitHub Actions artifact.
+      #
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk
-          # Path from the buildozer-action output variable.
-          path: ${{ steps.buildozer.outputs.filename }}
-          # Artifacts expire after 30 days by default (GitHub free tier).
-          # Reduce to 7 days to save storage quota.
+          name: PSL-Android-APK
+          path: app/psl_app/bin/*.apk
           retention-days: 7
+```
