@@ -1,4 +1,4 @@
-```yaml
+
 name: Build Android APK
 
 on:
@@ -57,4 +57,4 @@ jobs:
           name: PSL-Android-APK
           path: app/psl_app/bin/*.apk
           retention-days: 7
-```
+
