@@ -11,6 +11,9 @@ jobs:
     name: Build APK
     runs-on: ubuntu-latest
 
+    env:
+      ANDROIDMINAPI: "24"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,6 +31,7 @@ jobs:
             zip \
             unzip \
             openjdk-17-jdk \
+            python3-pip \
             autoconf \
             libtool \
             pkg-config \
@@ -44,10 +48,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install buildozer cython
 
-      - name: Verify Android configuration
+      - name: Verify configuration
         working-directory: app/psl_app
         run: |
-          echo "=== buildozer.spec ==="
+          echo "ANDROIDMINAPI=$ANDROIDMINAPI"
           grep -E "android.api|android.minapi|android.archs|requirements" buildozer.spec
 
       - name: Clean Buildozer environment
