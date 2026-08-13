@@ -118,7 +118,7 @@ android.permissions = android.permission.CAMERA
 # 21 = Android 5.0 (Lollipop) — covers virtually every device in use.
 # If you want to exclude very old devices that may lack NEON vector instructions
 # (which numpy and opencv require), raise this to 23 (Android 6.0).
-android.api = 35
+android.api = 33
 android.minapi = 24
 
 # ── Architecture ──────────────────────────────────────────────────────────────
