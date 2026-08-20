@@ -6,24 +6,27 @@ import json
 import os
 from collections import deque
 import config
-import time
 
-# -------------- Load TFLite model & class map --------------
+EXPECTED_FEATURES = 166  # 40 for pose + 126 for hand landmarks
 
+# Load TFlite model and class_map.json
 interpreter = tf.lite.Interpreter(
-    model_path=os.path.join(config.MODEL_DIR, config.TFLITE_MODEL_NAME)
+    model_path=os.path.join(config.MODEL_DIR, 'psl_model.tflite')
 )
+# Now tensors are available to be used in memory
 interpreter.allocate_tensors()
+# Shows detail about the input tensor (=which tensor should we give the data)
 input_details = interpreter.get_input_details()
+# Shows detail about the output tensor (=which tensor should we look at for prediction)
 output_details = interpreter.get_output_details()
 
 with open(os.path.join(config.PROCESSED_DIR, "class_map.json")) as f:
     class_map = json.load(f)
-idx_to_class = {v: k for k, v in class_map.items()}
+indexes_in_clsmap = {value: key for key, value in class_map.items()}
+indexes_to_persian = ['چی', 'درسته', 'اسم', 'غذا', 'خانه', 'خانواده', 'خوب', 'خوشحال', 'لطفا', 'مادر', 'من', 'متشکرم', 'پدر', 'سلام']
 
 
-# ----------------- Causal One-Euro filter -----------------
-
+# Filters as always
 # This time it's frame-by-frame which realllly helps the flow of prediction
 class LowPassFilter:
     def __init__(self, alpha):
@@ -70,13 +73,14 @@ class CausalOneEuroFilter:
 
 
 # Create a bank of filters – one per hand landmark coordinate
+# The bank is a list which we use to put our data and add the filter to it.
 def create_filter_bank():
     bank = []
     for hand in range(2):  # left, right
         hand_bank = []
-        for lm in range(21):
-            lm_bank = [CausalOneEuroFilter(min_cutoff=1.0, beta=0.05) for _ in range(3)]
-            hand_bank.append(lm_bank)
+        for lm in range(21):  # 21 coords in every hand
+            landmark_bank = [CausalOneEuroFilter(min_cutoff=1.0, beta=0.05) for _ in range(3)]
+            hand_bank.append(landmark_bank)
         bank.append(hand_bank)
     return bank
 
@@ -84,31 +88,58 @@ def create_filter_bank():
 filter_bank = create_filter_bank()
 
 
-def filter_landmarks(left_raw, right_raw):
-    """Apply causal filter to current frame's landmarks."""
-    left_out = np.zeros_like(left_raw)
-    right_out = np.zeros_like(right_raw)
-    for lm in range(21):
-        for c in range(3):
-            left_out[lm, c] = filter_bank[0][lm][c].filter(left_raw[lm, c])
-            right_out[lm, c] = filter_bank[1][lm][c].filter(right_raw[lm, c])
-    return left_out, right_out
+# Applies causal filter to current frame's landmarks.
+def filter_landmarks(left_hand_raw_data, right_hand_raw_data):
+    left_hand_filtered = np.zeros_like(left_hand_raw_data)
+    right_hand_filtered = np.zeros_like(right_hand_raw_data)
+    for landmark in range(21):  # 21 landmarks in each hand
+        for column in range(3):  # (x, y, z)
+            # filters every one of 21 landmark using its 3 coordinates (x (coord), y (coord), z (distance to wrist))
+            # Adds each to the filter bank
+            left_hand_filtered[landmark, column] = filter_bank[0][landmark][column].filter(
+                left_hand_raw_data[landmark, column])
+            right_hand_filtered[landmark, column] = filter_bank[1][landmark][column].filter(
+                right_hand_raw_data[landmark, column])
+    return left_hand_filtered, right_hand_filtered
 
 
-# -------------- Feature extraction (must match config.FEATURE_TYPE) --------------
-HAND_TRIPLETS = [
-    (0, 1, 2), (1, 2, 3), (2, 3, 4),
-    (0, 5, 6), (5, 6, 7), (6, 7, 8),
-    (0, 9, 10), (9, 10, 11), (10, 11, 12),
-    (0, 13, 14), (13, 14, 15), (14, 15, 16),
-    (0, 17, 18), (17, 18, 19), (18, 19, 20),
-    (5, 0, 9), (9, 0, 13), (13, 0, 17), (1, 0, 5), (17, 0, 5)
+# Angle Computation (Indexing for angles)
+# (x, y, z) -> angle between landmark x and landmark z (that is y)
+HAND_ANGLE_INDEXES = [
+    # Thumb
+    (0, 1, 2),
+    (1, 2, 3),
+    (2, 3, 4),
+    # Index finger
+    (0, 5, 6),
+    (5, 6, 7),
+    (6, 7, 8),
+    # Middle finger
+    (0, 9, 10),
+    (9, 10, 11),
+    (10, 11, 12),
+    # Ring finger
+    (0, 13, 14),
+    (13, 14, 15),
+    (14, 15, 16),
+    # Pinky
+    (0, 17, 18),
+    (17, 18, 19),
+    (18, 19, 20),
+    # Knuckle abduction angles (angles BETWEEN fingers at MCP)
+    # for normalization based on wrist
+    (5, 0, 9),  # index_mcp → wrist → middle_mcp
+    (9, 0, 13),  # middle_mcp → wrist → ring_mcp
+    (13, 0, 17),  # ring_mcp → wrist → pinky_mcp
+    (1, 0, 5),  # thumb_cmc → wrist → index_mcp
+    (17, 0, 5),  # pinky_mcp → wrist → index_mcp (full span over hands)
 ]
 
 
+# Computes joint angles
 def compute_joint_angles(hand_coords):
     angles = np.zeros(20, dtype=np.float32)
-    for i, (a, b, c) in enumerate(HAND_TRIPLETS):
+    for i, (a, b, c) in enumerate(HAND_ANGLE_INDEXES):
         v1 = hand_coords[a] - hand_coords[b]
         v2 = hand_coords[c] - hand_coords[b]
         dot = np.dot(v1, v2)
@@ -126,71 +157,65 @@ def normalise_hand_coords(hand_coords):
     return (centered / scale).flatten()
 
 
-def extract_features_from_landmarks(left_lm, right_lm):
+def compute_and_norm_landmarks(left_landmarks, right_landmarks):
     """
-    Returns a 1D feature vector according to config.FEATURE_TYPE.
+    ALWAYS returns an array of exactly EXPECTED_FEATURES=166 length.
     """
-    left_angles = np.zeros(20, dtype=np.float32)
-    right_angles = np.zeros(20, dtype=np.float32)
-    left_coords = np.zeros(63, dtype=np.float32)
-    right_coords = np.zeros(63, dtype=np.float32)
+    # Start with zeros
+    result = np.zeros(EXPECTED_FEATURES, dtype=np.float32)  # float32 because coordinates might get float
+    # .flatten() converts the multidimensional array to a 1D array because the model expects a 1D array
+    # Half of result:
+    # * Left hand angles
+    result[:20] = compute_joint_angles(left_landmarks)
+    # * Left hand coords
+    result[40:103] = normalise_hand_coords(left_landmarks).flatten()
+    # Half of result
+    # * Right hand angles
+    result[20:40] = compute_joint_angles(right_landmarks)
+    # * Right hand coords
+    result[103:166] = normalise_hand_coords(right_landmarks).flatten()
 
-    if np.any(left_lm):
-        left_angles = compute_joint_angles(left_lm)
-        left_coords = normalise_hand_coords(left_lm)
-    if np.any(right_lm):
-        right_angles = compute_joint_angles(right_lm)
-        right_coords = normalise_hand_coords(right_lm)
-
-    if config.FEATURE_TYPE == "angles":
-        return np.concatenate([left_angles, right_angles])
-    elif config.FEATURE_TYPE == "coords":
-        return np.concatenate([left_coords, right_coords])
-    else:  # "both"
-        return np.concatenate([left_angles, right_angles, left_coords, right_coords])
+    return result
 
 
-sequence_buffer = deque(maxlen=config.SEQUENCE_LENGTH)
-prediction_window = deque(maxlen=15)
+# Prediction Tracking
 
+frame_60_sequence = deque(maxlen=config.SEQUENCE_LENGTH)
+
+# The current prediction and confidence that is for now untouched
 current_prediction = None
 current_confidence = 0.0
 
-# ---------------- Stable prediction tracking ----------------
-stable_prediction = None
-stable_start_time = None
-
-STABLE_REQUIRED_TIME = 2.0  # seconds
-
-# Predictions that survived the 4-second stability test
-confirmed_history = deque(maxlen=10)
-
-# ------------------------ MediaPipe setup ------------------------
+# MediaPipe Setup
 mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
-detector = mp_holistic.Holistic(
-    # If True, it would treat every frame like a completely un-related photo to other
-    # frames, better for image detection
-    static_image_mode=False,
-    model_complexity=1,  # 0 would be faster but dumber so why not 1?
-    min_detection_confidence=0.55,  # Just changed them to .55 instead of .50
-    min_tracking_confidence=0.55
+mediapipe_detector = mp.solutions.holistic.Holistic(
+    static_image_mode=False,  # False if video processing, True if image processing
+    model_complexity=1,  # 1 for slower but more accurate mode
+    # Minimum confidence
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
 )
 
-cap = cv2.VideoCapture(0)
-if not cap.isOpened():
+camera_capture = cv2.VideoCapture(0)
+if not camera_capture.isOpened():
     print("Cannot open camera")
     exit()
 
 print("Real‑time sign recognition started. Press 'q' to quit.")
 
+moz_counter = 0
 while True:
-    ret, frame = cap.read()
+    ret, frame = camera_capture.read()
     if not ret:
         break
+
+    moz_counter += 1
+
+    # Compatibility
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = detector.process(rgb)
+    results = mediapipe_detector.process(rgb)
     # Draw left hand
     if results.left_hand_landmarks:
         mp_drawing.draw_landmarks(
@@ -211,97 +236,48 @@ while True:
             mp_drawing_styles.get_default_hand_connections_style()
         )
 
-    # Extract raw landmarks (zero if missing)
-    left_raw = np.zeros((21, 3), dtype=np.float32)
-    right_raw = np.zeros((21, 3), dtype=np.float32)
+    # Extracts raw landmarks
+    left_hand_raw_data = np.zeros((21, 3), dtype=np.float32)
+    right_hand_raw_data = np.zeros((21, 3), dtype=np.float32)
     if results.left_hand_landmarks:
-        left_raw = np.array([[lm.x, lm.y, lm.z] for lm in results.left_hand_landmarks.landmark])
+        left_hand_arr = np.array(
+            [[landmark.x, landmark.y, landmark.z] for landmark in results.left_hand_landmarks.landmark])
     if results.right_hand_landmarks:
-        right_raw = np.array([[lm.x, lm.y, lm.z] for lm in results.right_hand_landmarks.landmark])
+        right_hand_arr = np.array(
+            [[landmark.x, landmark.y, landmark.z] for landmark in results.right_hand_landmarks.landmark])
 
-    # Apply causal filtering
-    left_filt, right_filt = filter_landmarks(left_raw, right_raw)
+    # Applies causal filtering
+    left_hand_filtered, right_hand_filtered = filter_landmarks(left_hand_raw_data, right_hand_raw_data)
 
-    # Compute feature vector
-    feat = extract_features_from_landmarks(left_filt, right_filt)
-    sequence_buffer.append(feat)
+    # Writes all landmarks in feature_data
+    feature_data = compute_and_norm_landmarks(left_hand_filtered, right_hand_filtered)
+    frame_60_sequence.append(feature_data)
 
-    # Run inference every 3 frames (save compute)
-    if len(sequence_buffer) == config.SEQUENCE_LENGTH and (len(sequence_buffer) % 3 == 0):
-        seq = np.array(sequence_buffer, dtype=np.float32)  # (T, D)
-        seq = np.expand_dims(seq, axis=0)  # (1, T, D)
-        interpreter.set_tensor(input_details[0]['index'], seq)
+    # Run inference every 3 frames and check if we have 60 frames (we will give our model 60 frames)
+    if len(frame_60_sequence) == config.SEQUENCE_LENGTH and moz_counter % 3 == 0:
+        sequence = np.array(frame_60_sequence, dtype=np.float32)  # (60, 166)
+        # adds the one which shows that we give ONE input at a time
+        sequence = np.expand_dims(sequence, axis=0)  # (1, 60, 166)
+
+        # input_details[0]['index']: the input tensor and its index
+        interpreter.set_tensor(input_details[0]['index'], sequence)  # Gives the input tensor the sequence
+        # Runs the neural network
         interpreter.invoke()
-        output = interpreter.get_tensor(output_details[0]['index'])[0]
+        # Gets the output
+        # Output is a list of numbers which each shows the confidence of each class.
+        output = interpreter.get_tensor(
+            output_details[0]['index']
+        )[0]  # the 0 index gives us the prediction
 
-        pred_class = np.argmax(output)
-        confidence = float(output[pred_class])
-
-        prediction_window.append(pred_class)
-
-        # ---------------- Majority voting ----------------
-        if len(prediction_window) == prediction_window.maxlen:
-
-            counts = np.bincount(prediction_window)
-            dominant = np.argmax(counts)
-
-            vote_ratio = counts[dominant] / len(prediction_window)
-
-            if vote_ratio >= 0.75:
-
-                current_prediction = dominant
-                current_confidence = confidence
-
-                now = time.monotonic()
-
-                # -------------------------------------------------
-                # Start / continue stability timer for this prediction
-                # -------------------------------------------------
-
-                if stable_prediction != current_prediction:
-                    # Prediction changed -> restart stability timer
-                    stable_prediction = current_prediction
-                    stable_start_time = now
-
-                # How long has this EXACT prediction stayed stable?
-                stable_duration = now - stable_start_time
-
-                # -------------------------------------------------
-                # If stable for 4+ seconds, save it
-                # -------------------------------------------------
-
-                if stable_duration >= STABLE_REQUIRED_TIME:
-
-                    sign_name = idx_to_class[current_prediction]
-
-                    # Only add it once for this stability period
-                    if not confirmed_history or \
-                            confirmed_history[-1]["prediction"] != sign_name:
-                        confirmed_history.append({
-                            "prediction": sign_name,
-                            "confidence": current_confidence,
-                            "time": now
-                        })
-
-            else:
-                # Voting isn't strong enough
-                current_prediction = None
-                current_confidence = 0.0
-
-                # Reset stability
-                stable_prediction = None
-                stable_start_time = None
-
-    now = time.monotonic()
-
-    if stable_prediction is not None and stable_start_time is not None:
-        stable_duration = now - stable_start_time
-    else:
-        stable_duration = 0.0
+        # We want the one that has the most confidence, this gives us its index
+        prediction_list = np.argmax(output)
+        current_prediction = int(prediction_list)
+        current_confidence = float(output[prediction_list])
 
     # Display result
     if current_prediction is not None:
-        sign_name = idx_to_class[current_prediction]
+        # Find the index in class_map
+        sign_name = indexes_in_clsmap[current_prediction]
         cv2.putText(
             frame,
             f"Sign: {sign_name}",
@@ -325,133 +301,14 @@ while True:
         cv2.putText(frame, "No sign", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-    # ============================================================
-    # CONFIRMED PREDICTIONS BOX
-    # ============================================================
-
-    box_x = 10
-    box_y = 105
-    box_width = 400
-    box_height = 70 + len(confirmed_history) * 35
-
-    box_height = min(
-        box_height,
-        frame.shape[0] - box_y - 10
-    )
-
-    # Background
-    cv2.rectangle(
-        frame,
-        (box_x, box_y),
-        (box_x + box_width, box_y + box_height),
-        (30, 30, 30),
-        -1
-    )
-
-    # Border
-    cv2.rectangle(
-        frame,
-        (box_x, box_y),
-        (box_x + box_width, box_y + box_height),
-        (255, 255, 255),
-        2
-    )
-
-    # Title
-    cv2.putText(
-        frame,
-        "Confirmed predictions:",
-        (box_x + 10, box_y + 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 255),
-        2
-    )
-
-    text_y = box_y + 65
-
-    for i, item in enumerate(confirmed_history):
-        text = (
-            f"{i + 1}. {item['prediction']} "
-            f"({item['confidence'] * 100:.0f}%)"
-        )
-
-        cv2.putText(
-            frame,
-            text,
-            (box_x + 10, text_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2
-        )
-
-        text_y += 35
-
-    # ============================================================
-    # DEBUG BOX
-    # ============================================================
-
-    debug_x = 430
-    debug_y = 105
-    debug_width = 420
-    debug_height = 230
-
-    cv2.rectangle(
-        frame,
-        (debug_x, debug_y),
-        (debug_x + debug_width, debug_y + debug_height),
-        (20, 20, 20),
-        -1
-    )
-
-    cv2.rectangle(
-        frame,
-        (debug_x, debug_y),
-        (debug_x + debug_width, debug_y + debug_height),
-        (255, 255, 255),
-        2
-    )
-
-    cv2.putText(
-        frame,
-        "DEBUG",
-        (debug_x + 10, debug_y + 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.75,
-        (255, 255, 255),
-        2
-    )
-
-    debug_lines = [
-        f"Current: {idx_to_class[current_prediction] if current_prediction is not None else 'None'}",
-        f"Confidence: {current_confidence * 100:.1f}%",
-        f"Stable: {stable_duration:.2f}s / {STABLE_REQUIRED_TIME:.1f}s",
-        f"Stable prediction: {idx_to_class[stable_prediction] if stable_prediction is not None else 'None'}",
-        f"Confirmed: {len(confirmed_history)}",
-    ]
-
-    debug_text_y = debug_y + 60
-
-    for line in debug_lines:
-        cv2.putText(
-            frame,
-            line,
-            (debug_x + 10, debug_text_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255, 255, 255),
-            1
-        )
-
-        debug_text_y += 27
-
     cv2.imshow('Real-time PSL Recognition', frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-cap.release()
+camera_capture.release()
 cv2.destroyAllWindows()
-detector.close()
+mediapipe_detector.close()
 print("Demo finished.")
+
+# Done!

@@ -25,7 +25,7 @@ NUM_CLASSES = len(class_map)
 print(f"Found {NUM_CLASSES} classes.")
 
 # Split: train 70%, val 15%, test 15% (stratified in order to have equal number of samples for every class)
-labels = [s["label"] for s in samples]
+labels = [sample["label"] for sample in samples]
 # Train and test
 train_files, test_files = train_test_split(samples, test_size=0.3, stratify=labels, random_state=config.SEED)
 # Validation and test
@@ -35,20 +35,24 @@ After every epoch, we show some tests to our model to see how much it
 improved in answering samples it hasn't seen ever.
 Validation DOESN'T IMPROVE THE MODEL ORE CHANGE THE WEIGHTS
 '''
-val_files, test_files = train_test_split(test_files, test_size=0.5, stratify=[s["label"] for s in test_files],
-                                         random_state=config.SEED)
+validation_files, test_files = train_test_split(test_files, test_size=0.5, stratify=[s["label"] for s in test_files],
+                                                random_state=config.SEED)
 
-print(f"Train: {len(train_files)}, Val: {len(val_files)}, Test: {len(test_files)}")
+print(f"Train: {len(train_files)}, Validation: {len(validation_files)}, Test: {len(test_files)}")
+
+# Just checks the input dimension
+sample_check = np.load(os.path.join(config.PROCESSED_DIR, train_files[0]["file"]))
+input_dimension = sample_check.shape[1]
 
 
-# ---------- Dataset creation with shape enforcement ----------
-# Don't know how this part works
+# Dataset creation
+# These part are also exclusivity written by AI
 def load_sequence(file_path, label):
     seq = tf.numpy_function(
         lambda p: np.load(p.decode()).astype(np.float32),
         [file_path], tf.float32
     )
-    # seq shape is (T, features) but unknown statically
+    # sequence shape is (T, features) but unknown statically
     seq.set_shape([None, None])  # set rank to 2, but dims unknown
     return seq, label
 
@@ -72,7 +76,7 @@ def pad_and_augment(seq, label, is_training):
         )
         seq = seq * tf.expand_dims(mask, 1)
     # Enforce static shape
-    seq = tf.ensure_shape(seq, [config.SEQUENCE_LENGTH, input_dim])
+    seq = tf.ensure_shape(seq, [config.SEQUENCE_LENGTH, input_dimension])
     return seq, label
 
 
@@ -97,97 +101,44 @@ def create_dataset(sample_list, is_training=False):
     return ds
 
 
-# Determine input feature dimension from one sample
-sample_seq = np.load(os.path.join(config.PROCESSED_DIR, train_files[0]["file"]))
-input_dim = sample_seq.shape[1]
-print(f"Input feature dimension: {input_dim}")
-
 # Now create datasets
-train_ds = create_dataset(train_files, is_training=True)  # Trains in this part
-val_ds = create_dataset(val_files, is_training=False)
-test_ds = create_dataset(test_files, is_training=False)
+train_dataset = create_dataset(train_files, is_training=True)  # Train's in this part
+validation_dataset = create_dataset(validation_files, is_training=False)
+test_dataset = create_dataset(test_files, is_training=False)
 
 
-# ---------- Model definitions (with explicit input_shape) ----------
-def build_bilstm(input_dim, num_classes):
+# Model core
+def build_bilstm(input_dimension, num_classes):
     """
     Builds a BiLSTM (Bidirectional Large Short-Term Memory) The difference between BiLSTM and LSTM is that BiLSTM has
-    two running LSTMs which one starts from the first and the other from the last. This improves the model in a way
+    two running LSTMs which one starts from the first and the other from the last. This improves the core_model in a way
     that it can handle the prediction with full confidence over the past, the current and the future state.
     """
-    # The structure of the model which uses Masking, BiLSTM and Dropout
-    model = tf.keras.Sequential([
+    # The structure of the core_model which uses Masking, BiLSTM and Dropout
+    core_model = tf.keras.Sequential([
         # The Input Layer
-        tf.keras.layers.Input(shape=(config.SEQUENCE_LENGTH, input_dim)),
+        tf.keras.layers.Input(shape=(config.SEQUENCE_LENGTH, input_dimension)),
+        # Skips zero and incorrect data
         tf.keras.layers.Masking(mask_value=0.0),
+        # core of the core
         tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(
-            config.LSTM_UNITS, return_sequences=False,
-            dropout=config.LSTM_DROPOUT, recurrent_dropout=config.LSTM_DROPOUT
+            config.LSTM_UNITS,  # Units of neural network
+            return_sequences=False,  # Not necessary
+            dropout=config.LSTM_DROPOUT,  # What percentage of neural network should sleep
+            recurrent_dropout=0.0  # weakens some of the memory for generalization, but we don't wantttt
         )),
+        # Creates a layer of 256 neural neurons
         tf.keras.layers.Dense(256, activation='relu'),
+        # Randomly drops some neurons
         tf.keras.layers.Dropout(config.DROPOUT),
+        # number of probabilities (NUM_CLASSES which are the words we added)
         tf.keras.layers.Dense(num_classes, activation='softmax')
     ])
-    return model
+    return core_model
 
-
-# BiLSTM is used by default, so we won't need Transformer for many reasons.
-'''
-def build_transformer(input_dim, num_classes):
-    """
-    The difference of BiLSTM and Transformer is that BiLSTM goes frame-by-frame but a Transformer can see multiple 
-    frames immediately and figure out the most important frames, at the expense of more RAM and bigger dataset, 
-    which we don't have and need.
-    """
-
-    class PositionalEmbedding(tf.keras.layers.Layer):
-        def __init__(self, sequence_length, d_model):
-            super().__init__()
-            self.d_model = d_model
-            self.pos_encoding = self._positional_encoding(sequence_length, d_model)
-
-        def _positional_encoding(self, length, d_model):
-            angle_rads = np.arange(length)[:, np.newaxis] / np.power(10000, (
-                    2 * (np.arange(d_model)[np.newaxis, :] // 2)) / d_model)
-            angle_rads[:, 0::2] = np.sin(angle_rads[:, 0::2])
-            angle_rads[:, 1::2] = np.cos(angle_rads[:, 1::2])
-            return tf.constant(angle_rads[np.newaxis, ...], dtype=tf.float32)
-
-        def call(self, x):
-            return x + self.pos_encoding[:, :tf.shape(x)[1], :]
-
-    inputs = tf.keras.Input(shape=(config.SEQUENCE_LENGTH, input_dim))
-    x = tf.keras.layers.Masking(mask_value=0.0)(inputs)
-    x = tf.keras.layers.Dense(config.D_MODEL)(x)
-    x = PositionalEmbedding(config.SEQUENCE_LENGTH, config.D_MODEL)(x)
-    for _ in range(config.NUM_LAYERS):
-        attn_output = tf.keras.layers.MultiHeadAttention(
-            num_heads=config.NUM_HEADS, key_dim=config.D_MODEL // config.NUM_HEADS,
-            dropout=config.TRANSFORMER_DROPOUT
-        )(x, x)
-        x = tf.keras.layers.Add()([x, attn_output])
-        x = tf.keras.layers.LayerNormalization()(x)
-        ffn = tf.keras.Sequential([
-            tf.keras.layers.Dense(config.D_MODEL * 4, activation='relu'),
-            tf.keras.layers.Dropout(config.TRANSFORMER_DROPOUT),
-            tf.keras.layers.Dense(config.D_MODEL)
-        ])
-        ffn_output = ffn(x)
-        x = tf.keras.layers.Add()([x, ffn_output])
-        x = tf.keras.layers.LayerNormalization()(x)
-    x = tf.keras.layers.GlobalAveragePooling1D()(x)
-    x = tf.keras.layers.Dense(256, activation='relu')(x)
-    x = tf.keras.layers.Dropout(config.DROPOUT)(x)
-    outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
-    return tf.keras.Model(inputs, outputs)
-'''
 
 # Build model
-if config.MODEL_TYPE == "bilstm":
-    model = build_bilstm(input_dim, NUM_CLASSES)
-else:
-    # model = build_transformer(input_dim, NUM_CLASSES)
-    pass
+model = build_bilstm(input_dimension, NUM_CLASSES)
 
 # Tells a summary of the model
 model.summary()
@@ -203,8 +154,8 @@ callbacks = [
     ),
     # EarlyStopping checks if the model hasn't improved in x epochs. If yes, Stops the model completely.
     tf.keras.callbacks.EarlyStopping(
-        monitor='val_accuracy', patience=config.EARLY_STOPPING_PATIENCE,    # Monitors validation accuracy
-        restore_best_weights=True   # Uses the best results for the model
+        monitor='val_accuracy', patience=config.EARLY_STOPPING_PATIENCE,  # Monitors validation accuracy
+        restore_best_weights=True  # Uses the best results for the model
     ),
     # A sort of checkpoint for the model. Saves the best model in case of crashes etc.
     tf.keras.callbacks.ModelCheckpoint(
@@ -219,6 +170,7 @@ optimizer = tf.keras.optimizers.AdamW(
     decay=config.WEIGHT_DECAY,
     clipnorm=1.0
 )
+
 # Compiles the model
 model.compile(optimizer=optimizer,
               loss='sparse_categorical_crossentropy',
@@ -226,20 +178,20 @@ model.compile(optimizer=optimizer,
 
 # Trains the model
 history = model.fit(
-    train_ds,
-    validation_data=val_ds,
+    train_dataset,
+    validation_data=validation_dataset,
     epochs=config.EPOCHS,
     callbacks=callbacks,
-    verbose=1,
-    shuffle=True
+    verbose=1,  # Progress bar
+    shuffle=True  # Shuffles because the model sees the data in the same order and that's bad...
 )
 
 # Evaluate on test set
 model.load_weights(os.path.join(config.MODEL_DIR, 'best_model.h5'))
-test_loss, test_acc = model.evaluate(test_ds, verbose=0)
+test_loss, test_acc = model.evaluate(test_dataset, verbose=0)
 print(f"Test accuracy: {test_acc:.4f}")
 
-# -------------------- Training Curves --------------------
+# Training Curves
 # Gave this part to AI because I was lazy to write all of it :))
 
 epochs = range(1, len(history.history["loss"]) + 1)
@@ -283,5 +235,5 @@ plt.savefig("training_results.png", dpi=300)
 plt.close()
 
 # Save final model
-model.save(os.path.join(config.MODEL_DIR, 'final_model.keras'))
+model.save(os.path.join(config.MODEL_DIR, config.KERAS_MODEL_NAME))
 print("Training complete.")

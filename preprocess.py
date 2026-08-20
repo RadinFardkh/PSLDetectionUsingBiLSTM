@@ -7,21 +7,21 @@ from pathlib import Path
 from tqdm import tqdm
 import config
 
-# ---------- Determine expected feature dimension at import time ----------
 # We know the structure based on config.FEATURE_TYPE
-if config.FEATURE_TYPE == "angles":
-    EXPECTED_FEATURE_DIM = 40  # 20 left + 20 right
-elif config.FEATURE_TYPE == "coords":
-    EXPECTED_FEATURE_DIM = 126  # 63 left + 63 right
-else:  # "both"
-    EXPECTED_FEATURE_DIM = 166  # 40 + 126
+EXPECTED_FEATURES = 166  # 40 for pose + 126 for hand landmarks
+print(f"Expected feature dimension per frame: {EXPECTED_FEATURES}")
 
-print(f"Expected feature dimension per frame: {EXPECTED_FEATURE_DIM}")
+'''
+(x, y, z) means x and y in the 2d space and z is a distance to the normalizing point (in here it's wrist)
+'''
+
+'''
+Filters
+This part just filters jittering in detection
+important but don't know the details that much because of the hard math
+'''
 
 
-# ---------- One-Euro Filter ----------
-# This part just filters jittering in detection
-# important but don't know the details that much because of the hard math
 class LowPassFilter:
     def __init__(self, alpha):
         self.alpha = alpha
@@ -72,33 +72,24 @@ def smooth_landmarks(landmarks_3d, min_cutoff=1.0, beta=0.05):
     smoothed = np.zeros_like(landmarks_3d)
     for n in range(N):
         for coord in range(3):
-            filt = OneEuroFilter(min_cutoff=min_cutoff, beta=beta, d_cutoff=1.0)
+            filter_ = OneEuroFilter(min_cutoff=min_cutoff, beta=beta, d_cutoff=1.0)
             for t in range(T):
-                smoothed[t, n, coord] = filt.filter(landmarks_3d[t, n, coord])
+                smoothed[t, n, coord] = filter_.filter(landmarks_3d[t, n, coord])
     return smoothed
 
 
-# ---------- MediaPipe setup ----------
-if config.USE_HOLISTIC:
-    # Will detect hands and pose, super better use this one
-    detector = mp.solutions.holistic.Holistic(
-        static_image_mode=False,
-        model_complexity=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
-else:
-    # Will only detect hands
-    detector = mp.solutions.hands.Hands(
-        static_image_mode=False,
-        max_num_hands=2,
-        model_complexity=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
+# MediaPipe setup
+mediapipe_detector = mp.solutions.holistic.Holistic(
+    static_image_mode=False,  # False if video processing, True if image processing
+    model_complexity=1,  # 1 for slower but more accurate mode
+    # Minimum confidence
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
 
-# ---------- Angle computation ----------
-HAND_TRIPLETS = [
+# Angle Computation (Indexing for angles)
+# (x, y, z) -> angle between landmark x and landmark z (that is y)
+HAND_ANGLE_INDEXES = [
     # Thumb
     (0, 1, 2),
     (1, 2, 3),
@@ -120,19 +111,22 @@ HAND_TRIPLETS = [
     (17, 18, 19),
     (18, 19, 20),
     # Knuckle abduction angles (angles BETWEEN fingers at MCP)
-    # Probably for normalization based on wrist
+    # for normalization based on wrist
     (5, 0, 9),  # index_mcp → wrist → middle_mcp
     (9, 0, 13),  # middle_mcp → wrist → ring_mcp
     (13, 0, 17),  # ring_mcp → wrist → pinky_mcp
     (1, 0, 5),  # thumb_cmc → wrist → index_mcp
-    (17, 0, 5),  # pinky_mcp → wrist → index_mcp (full span)
+    (17, 0, 5),  # pinky_mcp → wrist → index_mcp (full span over hands)
 ]
 
 
+# This 2 part are exceptionally hard to understand, so I gave to AI
 # Computes and returns the finalized angles
 def compute_joint_angles(hand_coords):
-    angles = np.zeros(len(HAND_TRIPLETS), dtype=np.float32)
-    for i, (a, b, c) in enumerate(HAND_TRIPLETS):
+    # An array of zeros for storing
+    angles = np.zeros(len(HAND_ANGLE_INDEXES), dtype=np.float32)
+    # This part is for computing the angle in every index of HAND_ANGLE_INDEXES
+    for i, (a, b, c) in enumerate(HAND_ANGLE_INDEXES):
         v1 = hand_coords[a] - hand_coords[b]
         v2 = hand_coords[c] - hand_coords[b]
         dot = np.dot(v1, v2)
@@ -151,100 +145,82 @@ def normalise_hand_coords(hand_coords):
 
 
 # Returns the finalized and complete result of extraction
-def extract_features_from_landmarks(left_lm, right_lm):
+def compute_and_norm_landmarks(left_landmarks, right_landmarks):
     """
-    ALWAYS returns an array of exactly EXPECTED_FEATURE_DIM length.
+    ALWAYS returns an array of exactly EXPECTED_FEATURES=166 length.
     """
     # Start with zeros
-    result = np.zeros(EXPECTED_FEATURE_DIM, dtype=np.float32)
-
-    if config.FEATURE_TYPE == "angles":
-        if np.any(left_lm):
-            result[:20] = compute_joint_angles(left_lm)
-        if np.any(right_lm):
-            result[20:40] = compute_joint_angles(right_lm)
-
-    elif config.FEATURE_TYPE == "coords":
-        if np.any(left_lm):
-            result[:63] = normalise_hand_coords(left_lm).flatten()
-        if np.any(right_lm):
-            result[63:126] = normalise_hand_coords(right_lm).flatten()
-
-    else:  # "both"
-        if np.any(left_lm):
-            result[:20] = compute_joint_angles(left_lm)
-            result[40:103] = normalise_hand_coords(left_lm).flatten()
-        if np.any(right_lm):
-            result[20:40] = compute_joint_angles(right_lm)
-            result[103:166] = normalise_hand_coords(right_lm).flatten()
+    result = np.zeros(EXPECTED_FEATURES, dtype=np.float32)  # float32 because coordinates might get float
+    # .flatten() converts the multidimensional array to a 1D array because the model expects a 1D array
+    # Half of result:
+    # * Left hand angles
+    result[:20] = compute_joint_angles(left_landmarks)
+    # * Left hand coords
+    result[40:103] = normalise_hand_coords(left_landmarks).flatten()
+    # Half of result
+    # * Right hand angles
+    result[20:40] = compute_joint_angles(right_landmarks)
+    # * Right hand coords
+    result[103:166] = normalise_hand_coords(right_landmarks).flatten()
 
     return result
 
 
-# ---------- Video processing ----------
-# Doesn't skip frames for any reason, reads every frame
-
+# Video Processing
 # Processes the video sample and returns the features.
 def process_video(video_path):
-    cap = cv2.VideoCapture(video_path)
+    # Captures the 1-sec video from video_path
+    camera_capture = cv2.VideoCapture(video_path)
     print(video_path)
-    print("Opened:", cap.isOpened())
-    print("Frame count:", int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
-    raw_left, raw_right = [], []
+    print("Opened:", camera_capture.isOpened())
+    print("Frame count:", int(camera_capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+    raw_left_hand_arr, raw_right_hand_arr = [], []
+    # Frame reading loop
     while True:
-        ret, frame = cap.read()
+        ret, frame = camera_capture.read()
         if not ret:
             break
-        # Converts to RGB for compatibility
-        rgb_video = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = detector.process(rgb_video)
+        # Converts to RGB for compatibility because mediapipe can't read BGR
+        rgbD = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = mediapipe_detector.process(rgbD)
 
         # The main process, then appends to the empty lists
-        lh = np.zeros((21, 3), dtype=np.float32)
-        rh = np.zeros((21, 3), dtype=np.float32)
-        if config.USE_HOLISTIC:
-            if results.left_hand_landmarks:
-                lh = np.array([[lm.x, lm.y, lm.z] for lm in results.left_hand_landmarks.landmark])
-            if results.right_hand_landmarks:
-                rh = np.array([[lm.x, lm.y, lm.z] for lm in results.right_hand_landmarks.landmark])
-        else:
-            if results.multi_hand_landmarks:
-                for idx, hand_lm in enumerate(results.multi_hand_landmarks):
-                    label = results.multi_handedness[idx].classification[0].label
-                    lm = np.array([[l.x, l.y, l.z] for l in hand_lm.landmark])
-                    if label == "Left":
-                        lh = lm
-                    else:
-                        rh = lm
-        raw_left.append(lh)
-        raw_right.append(rh)
-    cap.release()
+        # (21, 3): 21 for hand landmarks, 3 for x, y and z
+        left_hand_arr = np.zeros((21, 3), dtype=np.float32)
+        right_hand_arr = np.zeros((21, 3), dtype=np.float32)
+        '''
+        Outputs of Holistic process function
+        The results have multiple returns which one is left hand and right hand landmarks
+        landmark.x and landmark.y is x and y axis on 2d space
+        landmark.z is kinda normalising and shows the distance to wrist
+        '''
+        if results.left_hand_landmarks:
+            left_hand_arr = np.array(
+                [[landmark.x, landmark.y, landmark.z] for landmark in results.left_hand_landmarks.landmark])
+        if results.right_hand_landmarks:
+            right_hand_arr = np.array(
+                [[landmark.x, landmark.y, landmark.z] for landmark in results.right_hand_landmarks.landmark])
+        # Appending results to raw array
+        raw_left_hand_arr.append(left_hand_arr)
+        raw_right_hand_arr.append(right_hand_arr)
+    camera_capture.release()
 
-    if len(raw_left) == 0:
-        return None
+    final_left_arr = np.array(raw_left_hand_arr)
+    final_right_arr = np.array(raw_right_hand_arr)
 
-    left_arr = np.array(raw_left)  # (T, 21, 3)
-    right_arr = np.array(raw_right)  # (T, 21, 3)
+    # Applies jittering filter
+    final_left_arr = smooth_landmarks(final_left_arr)
+    final_right_arr = smooth_landmarks(final_right_arr)
 
-    # Apply jittering filter
-    if len(left_arr) >= 2:
-        left_arr = smooth_landmarks(left_arr)
-    if len(right_arr) >= 2:
-        right_arr = smooth_landmarks(right_arr)
+    # Build processed — every frame guaranteed same dimension
+    processed = np.zeros((len(final_left_arr), EXPECTED_FEATURES), dtype=np.float32)
+    for t in range(len(final_left_arr)):
+        processed[t] = compute_and_norm_landmarks(final_left_arr[t], final_right_arr[t])
 
-    # Build features — every frame guaranteed same dimension (coords or angles or both)
-    features = np.zeros((len(left_arr), EXPECTED_FEATURE_DIM), dtype=np.float32)
-    for t in range(len(left_arr)):
-        features[t] = extract_features_from_landmarks(left_arr[t], right_arr[t])
-
-    # Optional truncation (well better to record 1.1 secs - 2 secs)
-    if config.MAX_FRAMES:
-        features = features[:config.MAX_FRAMES]
-
-    return features
+    return processed
 
 
-# ---------- Main ----------
+# Main func
 def main():
     # Makes the 'processed' folder and subfolders
     Path(config.PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
@@ -254,19 +230,22 @@ def main():
     class_map = {cls: idx for idx, cls in enumerate(class_dirs)}
     # Dumps it into class_map.json
     with open(os.path.join(config.PROCESSED_DIR, "class_map.json"), "w") as f:
-        json.dump(class_map, f, indent=2)
+        json.dump(class_map,  # Writing class_map to
+                  f,  # f
+                  indent=2  # Beautify!!!!!
+                  )
 
     # Processes every video and dumps everything in 'processed' subfolders
     all_samples = []
     for cls in class_dirs:
+        # Path of data
         cls_path = os.path.join(config.DATA_DIR, cls)
+        # Finds the video_files
         video_files = sorted(Path(cls_path).glob("*.mp4"))
         moz = 60
+        # tqdm makes a progress bar, for having a better look when processing, took a while to understand!
         for vf in tqdm(video_files):
             frames = process_video(str(vf))
-            if frames is None or frames.shape[0] < 2:
-                tqdm.write(f"  Skipping {vf.name} (too few frames)")
-                continue
             # Saves them as .npy
             out_name = f"{cls}_{moz}.npy"
             moz += 1
