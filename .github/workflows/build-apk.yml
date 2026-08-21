@@ -2,9 +2,10 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+
   push:
     branches:
-      - Android-app
+      - main
 
 permissions:
   contents: read
@@ -15,20 +16,32 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      # ------------------------------------------------------------
+      # Python
+      # ------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
+      # ------------------------------------------------------------
+      # Java
+      # ------------------------------------------------------------
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
+      # ------------------------------------------------------------
+      # Linux dependencies
+      # ------------------------------------------------------------
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -50,18 +63,28 @@ jobs:
             gettext \
             libltdl-dev
 
+      # ------------------------------------------------------------
+      # Rust
+      # ------------------------------------------------------------
       - name: Install Rust
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # ------------------------------------------------------------
+      # Buildozer
+      # ------------------------------------------------------------
       - name: Install Buildozer
         run: |
           python -m pip install --upgrade pip setuptools wheel
+
           python -m pip install \
-            buildozer \
+            buildozer==1.6.0 \
             "cython==0.29.34"
 
+      # ------------------------------------------------------------
+      # Show versions
+      # ------------------------------------------------------------
       - name: Show tool versions
         run: |
           python --version
@@ -69,20 +92,92 @@ jobs:
           buildozer --version
           rustc --version
 
+      # ------------------------------------------------------------
+      # Verify project structure
+      # ------------------------------------------------------------
+      - name: Verify Android project
+        run: |
+          set -e
+
+          echo "Repository:"
+          pwd
+
+          echo
+          echo "Checking Android project..."
+
+          test -f app/psl_app/buildozer.spec
+          test -f app/psl_app/main.py
+          test -f app/psl_app/engine.py
+          test -f app/psl_app/app_config.py
+
+          test -f app/psl_app/models/sign_model.tflite
+          test -f app/psl_app/models/class_map.json
+          test -f app/psl_app/models/palm_detection_full.tflite
+          test -f app/psl_app/models/hand_landmark_full.tflite
+
+          echo
+          echo "Android project found successfully."
+
+          echo
+          echo "Buildozer spec:"
+          ls -lh app/psl_app/buildozer.spec
+
+      # ------------------------------------------------------------
+      # Validate Python syntax
+      # ------------------------------------------------------------
+      - name: Validate Python syntax
+        working-directory: app/psl_app
+        run: |
+          python -m compileall -q .
+
+          echo "Python syntax validation passed."
+
+      # ------------------------------------------------------------
+      # Build APK
+      # ------------------------------------------------------------
       - name: Build APK
+        working-directory: app/psl_app
         env:
           BUILDOZER_ALLOW_ORG_TEST_DOMAIN: "1"
-          P4A_BUILD_MINAPI: "24"
         run: |
+          set -e
+
+          echo "Build directory:"
+          pwd
+
+          echo
+          echo "Buildozer spec:"
+          ls -lh buildozer.spec
+
+          echo
+          echo "Starting Buildozer..."
+
           buildozer android debug
 
+      # ------------------------------------------------------------
+      # Find generated APK
+      # ------------------------------------------------------------
       - name: Find APK
+        working-directory: app/psl_app
         run: |
-          find bin -type f -name "*.apk" -print
+          set -e
 
+          echo "Generated APK files:"
+
+          find bin \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          test -n "$(find bin -type f -name '*.apk' -print -quit)"
+
+      # ------------------------------------------------------------
+      # Upload APK
+      # ------------------------------------------------------------
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: psl-ai-debug-apk
-          path: bin/*.apk
+          path: app/psl_app/bin/*.apk
           if-no-files-found: error
+          retention-days: 14
