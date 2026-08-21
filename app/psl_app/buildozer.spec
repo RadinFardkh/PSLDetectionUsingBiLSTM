@@ -91,8 +91,7 @@ source.exclude_patterns = \
 #   opencv
 #   numpy
 #   tflite-runtime
-#
-requirements = python3==3.12.9,hostpython3==3.12.9,kivy==2.3.1,numpy,opencv,tflite-runtime
+requirements = python3,kivy==2.3.1,numpy,opencv,tflite-runtime
 
 # -----------------------------------------------------------------------------
 # Android assets
