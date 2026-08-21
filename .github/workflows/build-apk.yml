@@ -66,6 +66,26 @@ jobs:
             libltdl-dev
 
       # ------------------------------------------------------------
+      # Android SDK
+      # ------------------------------------------------------------
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ------------------------------------------------------------
+      # Install Android SDK packages
+      # ------------------------------------------------------------
+      - name: Install Android SDK packages
+        run: |
+          set -e
+
+          yes | sdkmanager --licenses > /dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # ------------------------------------------------------------
       # Rust
       # ------------------------------------------------------------
       - name: Install Rust
@@ -111,6 +131,18 @@ jobs:
           echo "========== Rust =========="
           rustc --version
 
+          echo
+          echo "========== Android SDK =========="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo
+          echo "========== AIDL =========="
+          find "$ANDROID_HOME/build-tools" \
+            -name aidl \
+            -type f \
+            -print
+
       # ------------------------------------------------------------
       # Verify project structure
       # ------------------------------------------------------------
@@ -154,12 +186,49 @@ jobs:
           echo "Python syntax validation passed."
 
       # ------------------------------------------------------------
+      # Configure Buildozer Android SDK
+      # ------------------------------------------------------------
+      - name: Configure Buildozer Android environment
+        run: |
+          set -e
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo
+          echo "Android SDK contents:"
+          ls -lah "$ANDROID_HOME"
+
+          echo
+          echo "Build-tools:"
+          ls -lah "$ANDROID_HOME/build-tools"
+
+          echo
+          echo "AIDL:"
+          find "$ANDROID_HOME/build-tools" \
+            -name aidl \
+            -type f \
+            -print
+
+          # Make the SDK available to python-for-android/Buildozer.
+          mkdir -p "$HOME/.buildozer/android/platform"
+
+          ln -sfn "$ANDROID_HOME" \
+            "$HOME/.buildozer/android/platform/android-sdk"
+
+          echo
+          echo "Buildozer Android SDK link:"
+          ls -lah "$HOME/.buildozer/android/platform"
+
+      # ------------------------------------------------------------
       # Build APK
       # ------------------------------------------------------------
       - name: Build APK
         working-directory: app/psl_app
         env:
           BUILDOZER_ALLOW_ORG_TEST_DOMAIN: "1"
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           set -e
 
