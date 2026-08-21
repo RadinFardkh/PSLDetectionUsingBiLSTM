@@ -88,7 +88,7 @@ version = 1.0.0
 #                  The p4a recipe for this is provided by the c4k_tflite_example
 #                  reference repo. The engine.py already falls back to it
 #                  when `import tensorflow` fails.
-requirements = python3,kivy==2.3.0,numpy,opencv,tflite-runtime
+requirements = python3==3.12.9,hostpython3==3.12.9,kivy==2.3.1,numpy,opencv,tflite-runtime
 
 # ── Assets (model files) ──────────────────────────────────────────────────────
 #
