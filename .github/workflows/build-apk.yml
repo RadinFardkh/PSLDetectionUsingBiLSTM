@@ -16,11 +16,13 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+
       # ------------------------------------------------------------
       # Checkout
       # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v5
+
 
       # ------------------------------------------------------------
       # Python
@@ -30,6 +32,7 @@ jobs:
         with:
           python-version: "3.12"
 
+
       # ------------------------------------------------------------
       # Java
       # ------------------------------------------------------------
@@ -38,6 +41,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
 
       # ------------------------------------------------------------
       # Linux dependencies
@@ -65,18 +69,23 @@ jobs:
             gettext \
             libltdl-dev
 
+
       # ------------------------------------------------------------
       # Android SDK
       # ------------------------------------------------------------
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+
       # ------------------------------------------------------------
-      # Install Android SDK packages
+      # Android SDK packages
       # ------------------------------------------------------------
       - name: Install Android SDK packages
         run: |
           set -e
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
           yes | sdkmanager --licenses > /dev/null || true
 
@@ -84,6 +93,30 @@ jobs:
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
+
+
+      # ------------------------------------------------------------
+      # Verify Android SDK
+      # ------------------------------------------------------------
+      - name: Verify Android SDK
+        run: |
+          set -e
+
+          echo "Android SDK:"
+          ls -lah "$ANDROID_HOME"
+
+          echo
+          echo "SDK manager:"
+          which sdkmanager
+          sdkmanager --version
+
+          echo
+          echo "AIDL:"
+          find "$ANDROID_HOME/build-tools" \
+            -name aidl \
+            -type f \
+            -print
+
 
       # ------------------------------------------------------------
       # Rust
@@ -95,6 +128,7 @@ jobs:
           curl https://sh.rustup.rs -sSf | sh -s -- -y
 
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
 
       # ------------------------------------------------------------
       # Buildozer
@@ -108,6 +142,7 @@ jobs:
           python -m pip install \
             buildozer==1.6.0 \
             "cython==0.29.34"
+
 
       # ------------------------------------------------------------
       # Show versions
@@ -132,16 +167,13 @@ jobs:
           rustc --version
 
           echo
-          echo "========== Android SDK =========="
+          echo "========== Android =========="
+          sdkmanager --version
+
+          echo
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
-          echo
-          echo "========== AIDL =========="
-          find "$ANDROID_HOME/build-tools" \
-            -name aidl \
-            -type f \
-            -print
 
       # ------------------------------------------------------------
       # Verify project structure
@@ -173,6 +205,7 @@ jobs:
           echo "Buildozer spec:"
           ls -lh app/psl_app/buildozer.spec
 
+
       # ------------------------------------------------------------
       # Validate Python syntax
       # ------------------------------------------------------------
@@ -185,40 +218,26 @@ jobs:
 
           echo "Python syntax validation passed."
 
+
       # ------------------------------------------------------------
-      # Configure Buildozer Android SDK
+      # Configure Buildozer to use runner Android SDK
       # ------------------------------------------------------------
-      - name: Configure Buildozer Android environment
+      - name: Configure Android SDK for Buildozer
         run: |
           set -e
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "Using Android SDK:"
+          echo "$ANDROID_HOME"
 
           echo
-          echo "Android SDK contents:"
-          ls -lah "$ANDROID_HOME"
+          echo "Checking SDK:"
+          test -d "$ANDROID_HOME/platform-tools"
+          test -d "$ANDROID_HOME/build-tools"
+          test -d "$ANDROID_HOME/platforms"
 
           echo
-          echo "Build-tools:"
-          ls -lah "$ANDROID_HOME/build-tools"
+          echo "SDK configuration complete."
 
-          echo
-          echo "AIDL:"
-          find "$ANDROID_HOME/build-tools" \
-            -name aidl \
-            -type f \
-            -print
-
-          # Make the SDK available to python-for-android/Buildozer.
-          mkdir -p "$HOME/.buildozer/android/platform"
-
-          ln -sfn "$ANDROID_HOME" \
-            "$HOME/.buildozer/android/platform/android-sdk"
-
-          echo
-          echo "Buildozer Android SDK link:"
-          ls -lah "$HOME/.buildozer/android/platform"
 
       # ------------------------------------------------------------
       # Build APK
@@ -227,8 +246,10 @@ jobs:
         working-directory: app/psl_app
         env:
           BUILDOZER_ALLOW_ORG_TEST_DOMAIN: "1"
+
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+
         run: |
           set -e
 
@@ -240,9 +261,18 @@ jobs:
           ls -lh buildozer.spec
 
           echo
+          echo "ANDROID_HOME:"
+          echo "$ANDROID_HOME"
+
+          echo
+          echo "ANDROID_SDK_ROOT:"
+          echo "$ANDROID_SDK_ROOT"
+
+          echo
           echo "Starting Buildozer..."
 
           buildozer android debug
+
 
       # ------------------------------------------------------------
       # Find generated APK
@@ -260,6 +290,7 @@ jobs:
             -print
 
           test -n "$(find bin -type f -name '*.apk' -print -quit)"
+
 
       # ------------------------------------------------------------
       # Upload APK
