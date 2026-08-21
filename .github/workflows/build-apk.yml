@@ -1,153 +1,89 @@
-name: Build PSL AI Android APK
+name: Build Android APK
 
 on:
   workflow_dispatch:
-
   push:
     branches:
-      - main
+      - Android-app
 
 permissions:
   contents: read
 
-concurrency:
-  group: android-build-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-android:
-    name: Build Android APK
-    runs-on: ubuntu-latest
+  build:
+    name: Build PSL AI APK
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          fetch-depth: 1
+          python-version: "3.12"
+          cache: "pip"
 
-      # -----------------------------------------------------------------------
-      # Verify that the Android project is exactly where Buildozer expects it.
-      # -----------------------------------------------------------------------
-      - name: Verify Android project
-        working-directory: app/psl_app
-        shell: bash
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install system dependencies
         run: |
-          set -euo pipefail
+          sudo apt-get update
 
-          echo "Project directory:"
-          pwd
+          sudo apt-get install -y \
+            git \
+            zip \
+            unzip \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            gettext \
+            libltdl-dev
 
-          echo
-          echo "Project tree:"
-          find . -maxdepth 2 -type f | sort
-
-          echo
-          echo "Checking required application files..."
-
-          test -f main.py
-          test -f buildozer.spec
-          test -f app_config.py
-          test -f engine.py
-
-          test -f screens/__init__.py
-          test -f screens/camera_screen.py
-          test -f screens/splash_screen.py
-          test -f screens/widgets.py
-
-          echo
-          echo "Checking required model files..."
-
-          test -f models/sign_model.tflite
-          test -f models/class_map.json
-          test -f models/palm_detection_full.tflite
-          test -f models/hand_landmark_full.tflite
-
-          echo
-          echo "All required files are present."
-
-      # -----------------------------------------------------------------------
-      # Python syntax validation.
-      # compileall does not import Kivy/OpenCV/TFLite, so this is safe to run
-      # before the Android build environment exists.
-      # -----------------------------------------------------------------------
-      - name: Validate Python syntax
-        working-directory: app/psl_app
-        shell: bash
+      - name: Install Rust
         run: |
-          set -euo pipefail
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-          python3 -m compileall -q .
-
-          echo "Python syntax validation passed."
-
-      # -----------------------------------------------------------------------
-      # Print the important Buildozer settings into the Actions log.
-      # This makes misconfiguration obvious without dumping the entire spec.
-      # -----------------------------------------------------------------------
-      - name: Validate Buildozer configuration
-        working-directory: app/psl_app
-        shell: bash
+      - name: Install Buildozer
         run: |
-          set -euo pipefail
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install \
+            buildozer \
+            "cython==0.29.34"
 
-          echo "Buildozer configuration:"
-          echo "------------------------"
+      - name: Show tool versions
+        run: |
+          python --version
+          java -version
+          buildozer --version
+          rustc --version
 
-          grep -E \
-            '^(title|package.name|package.domain|source.dir|source.include_exts|requirements|android.permissions|android.api|android.minapi|android.archs|android.add_assets)' \
-            buildozer.spec
-
-          echo
-          echo "Expected project root:"
-          echo "  $(pwd)"
-
-          echo
-          echo "Expected entry point:"
-          test "$(basename "$(find . -maxdepth 1 -name main.py -print -quit)")" = "main.py"
-          echo "  main.py"
-
-      # -----------------------------------------------------------------------
-      # Build using the official Buildozer Docker-based GitHub Action.
-      #
-      # No host-side Python/Java/Android SDK setup is necessary here.
-      # -----------------------------------------------------------------------
       - name: Build APK
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          repository_root: .
-          workdir: app/psl_app
-          command: buildozer android debug
-          buildozer_version: "1.6.0"
-
-      # -----------------------------------------------------------------------
-      # Verify that the action actually produced an APK.
-      # -----------------------------------------------------------------------
-      - name: Verify APK output
-        shell: bash
+        env:
+          BUILDOZER_ALLOW_ORG_TEST_DOMAIN: "1"
+          P4A_BUILD_MINAPI: "24"
         run: |
-          set -euo pipefail
+          buildozer android debug
 
-          APK="${{ steps.buildozer.outputs.filename }}"
+      - name: Find APK
+        run: |
+          find bin -type f -name "*.apk" -print
 
-          echo "Buildozer output:"
-          echo "${APK}"
-
-          test -n "${APK}"
-          test -f "${APK}"
-          test "${APK##*.}" = "apk"
-
-          echo
-          echo "APK successfully created:"
-          ls -lh "${APK}"
-
-      # -----------------------------------------------------------------------
-      # Upload the exact file reported by Buildozer.
-      # -----------------------------------------------------------------------
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PSL-AI-debug-${{ github.sha }}
-          path: ${{ steps.buildozer.outputs.filename }}
+          name: psl-ai-debug-apk
+          path: bin/*.apk
           if-no-files-found: error
-          retention-days: 14
