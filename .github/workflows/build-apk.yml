@@ -34,7 +34,7 @@ jobs:
 
 
       # ------------------------------------------------------------
-      # Java
+      # Java 17
       # ------------------------------------------------------------
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -78,7 +78,7 @@ jobs:
 
 
       # ------------------------------------------------------------
-      # Android SDK packages
+      # Install Android SDK packages
       # ------------------------------------------------------------
       - name: Install Android SDK packages
         run: |
@@ -87,35 +87,138 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
+          echo
+          echo "Accepting Android SDK licenses..."
+
           yes | sdkmanager --licenses > /dev/null || true
+
+          echo
+          echo "Installing required Android SDK packages..."
 
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
-            "build-tools;35.0.0"
+            "build-tools;37.0.0"
+
+          echo
+          echo "Installed Build Tools:"
+          ls -lah "$ANDROID_HOME/build-tools"
+
+          echo
+          echo "Checking AIDL..."
+
+          test -f "$ANDROID_HOME/build-tools/37.0.0/aidl"
+
+          echo "AIDL found successfully."
 
 
       # ------------------------------------------------------------
-      # Verify Android SDK
+      # Configure Buildozer SDK compatibility
+      # ------------------------------------------------------------
+      - name: Configure Buildozer Android SDK
+        run: |
+          set -e
+
+          BUILDOZER_SDK="$HOME/.buildozer/android/platform/android-sdk"
+
+          echo "Buildozer SDK:"
+          echo "$BUILDOZER_SDK"
+
+          echo
+          echo "Runner Android SDK:"
+          echo "$ANDROID_HOME"
+
+          # Remove anything that may already exist.
+          rm -rf "$BUILDOZER_SDK"
+
+          # Make Buildozer use the GitHub runner's modern SDK.
+          mkdir -p "$(dirname "$BUILDOZER_SDK")"
+
+          ln -s "$ANDROID_HOME" "$BUILDOZER_SDK"
+
+          echo
+          echo "Buildozer SDK link:"
+          ls -lah "$HOME/.buildozer/android/platform"
+
+
+      # ------------------------------------------------------------
+      # Create sdkmanager compatibility wrapper
+      # ------------------------------------------------------------
+      - name: Configure sdkmanager compatibility wrapper
+        run: |
+          set -e
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/16.0/bin/sdkmanager"
+
+          test -x "$SDKMANAGER"
+
+          echo "Modern sdkmanager:"
+          echo "$SDKMANAGER"
+
+          echo
+          echo "sdkmanager version:"
+          "$SDKMANAGER" --version
+
+          # python-for-android expects the old path:
+          #
+          # android-sdk/tools/bin/sdkmanager
+          #
+          # Modern Android SDKs no longer contain this path.
+          # Create a compatibility wrapper at the path p4a expects.
+
+          mkdir -p "$ANDROID_HOME/tools/bin"
+
+          cat > "$ANDROID_HOME/tools/bin/sdkmanager" <<EOF
+          #!/usr/bin/env bash
+          exec "$SDKMANAGER" "\$@"
+          EOF
+
+          chmod +x "$ANDROID_HOME/tools/bin/sdkmanager"
+
+          echo
+          echo "Compatibility sdkmanager:"
+          ls -lh "$ANDROID_HOME/tools/bin/sdkmanager"
+
+          echo
+          echo "Testing compatibility sdkmanager:"
+
+          "$ANDROID_HOME/tools/bin/sdkmanager" --version
+
+
+      # ------------------------------------------------------------
+      # Verify Build Tools and AIDL
       # ------------------------------------------------------------
       - name: Verify Android SDK
         run: |
           set -e
 
-          echo "Android SDK:"
+          echo "========== Android SDK =========="
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo
+          echo "SDK directory:"
           ls -lah "$ANDROID_HOME"
 
           echo
-          echo "SDK manager:"
-          which sdkmanager
-          sdkmanager --version
+          echo "Build Tools:"
+          ls -lah "$ANDROID_HOME/build-tools"
 
           echo
           echo "AIDL:"
-          find "$ANDROID_HOME/build-tools" \
-            -name aidl \
-            -type f \
-            -print
+          ls -lh "$ANDROID_HOME/build-tools/37.0.0/aidl"
+
+          echo
+          echo "Legacy sdkmanager compatibility path:"
+          ls -lh "$ANDROID_HOME/tools/bin/sdkmanager"
+
+          echo
+          echo "sdkmanager version:"
+          "$ANDROID_HOME/tools/bin/sdkmanager" --version
+
+          echo
+          echo "Android SDK verification passed."
 
 
       # ------------------------------------------------------------
@@ -137,7 +240,10 @@ jobs:
         run: |
           set -e
 
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade \
+            pip \
+            setuptools \
+            wheel
 
           python -m pip install \
             buildozer==1.6.0 \
@@ -163,16 +269,29 @@ jobs:
           buildozer --version
 
           echo
+          echo "========== Cython =========="
+          cython --version
+
+          echo
           echo "========== Rust =========="
           rustc --version
 
           echo
-          echo "========== Android =========="
+          echo "========== Android SDK =========="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo
+          echo "sdkmanager:"
           sdkmanager --version
 
           echo
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "Build Tools:"
+          ls "$ANDROID_HOME/build-tools"
+
+          echo
+          echo "AIDL:"
+          "$ANDROID_HOME/build-tools/37.0.0/aidl" --version || true
 
 
       # ------------------------------------------------------------
@@ -220,23 +339,39 @@ jobs:
 
 
       # ------------------------------------------------------------
-      # Configure Buildozer to use runner Android SDK
+      # Final Buildozer SDK check
       # ------------------------------------------------------------
-      - name: Configure Android SDK for Buildozer
+      - name: Verify Buildozer SDK
         run: |
           set -e
 
-          echo "Using Android SDK:"
-          echo "$ANDROID_HOME"
+          BUILDOZER_SDK="$HOME/.buildozer/android/platform/android-sdk"
+
+          echo "Buildozer SDK:"
+          echo "$BUILDOZER_SDK"
 
           echo
-          echo "Checking SDK:"
-          test -d "$ANDROID_HOME/platform-tools"
-          test -d "$ANDROID_HOME/build-tools"
-          test -d "$ANDROID_HOME/platforms"
+          echo "SDK manager used by python-for-android:"
+
+          "$BUILDOZER_SDK/tools/bin/sdkmanager" --version
 
           echo
-          echo "SDK configuration complete."
+          echo "Build Tools available:"
+
+          "$BUILDOZER_SDK/tools/bin/sdkmanager" \
+            --list \
+            | grep "build-tools;37.0.0" \
+            | head -n 5 || true
+
+          echo
+          echo "AIDL exists at:"
+
+          test -f "$BUILDOZER_SDK/build-tools/37.0.0/aidl"
+
+          echo "$BUILDOZER_SDK/build-tools/37.0.0/aidl"
+
+          echo
+          echo "Buildozer SDK verification passed."
 
 
       # ------------------------------------------------------------
@@ -267,6 +402,10 @@ jobs:
           echo
           echo "ANDROID_SDK_ROOT:"
           echo "$ANDROID_SDK_ROOT"
+
+          echo
+          echo "Buildozer SDK:"
+          ls -lah "$HOME/.buildozer/android/platform/android-sdk"
 
           echo
           echo "Starting Buildozer..."
