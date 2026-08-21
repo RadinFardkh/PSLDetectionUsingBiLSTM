@@ -44,6 +44,8 @@ jobs:
       # ------------------------------------------------------------
       - name: Install system dependencies
         run: |
+          set -e
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -68,7 +70,10 @@ jobs:
       # ------------------------------------------------------------
       - name: Install Rust
         run: |
+          set -e
+
           curl https://sh.rustup.rs -sSf | sh -s -- -y
+
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # ------------------------------------------------------------
@@ -76,6 +81,8 @@ jobs:
       # ------------------------------------------------------------
       - name: Install Buildozer
         run: |
+          set -e
+
           python -m pip install --upgrade pip setuptools wheel
 
           python -m pip install \
@@ -87,9 +94,21 @@ jobs:
       # ------------------------------------------------------------
       - name: Show tool versions
         run: |
+          set -e
+
+          echo "========== Python =========="
           python --version
+
+          echo
+          echo "========== Java =========="
           java -version
+
+          echo
+          echo "========== Buildozer =========="
           buildozer --version
+
+          echo
+          echo "========== Rust =========="
           rustc --version
 
       # ------------------------------------------------------------
@@ -128,6 +147,8 @@ jobs:
       - name: Validate Python syntax
         working-directory: app/psl_app
         run: |
+          set -e
+
           python -m compileall -q .
 
           echo "Python syntax validation passed."
@@ -135,20 +156,6 @@ jobs:
       # ------------------------------------------------------------
       # Build APK
       # ------------------------------------------------------------
-
-      - name: Accept Buildozer Android SDK licenses
-        run: |
-          yes | ~/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager \
-            --sdk_root=~/.buildozer/android/platform/android-sdk \
-            --licenses || true
-
-
-      - name: Install Android Build Tools
-        run: |
-          yes | ~/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager \
-            --sdk_root=~/.buildozer/android/platform/android-sdk \
-            "build-tools;37.0.0"
-    
       - name: Build APK
         working-directory: app/psl_app
         env:
