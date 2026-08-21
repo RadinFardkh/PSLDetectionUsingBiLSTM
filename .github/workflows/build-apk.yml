@@ -135,6 +135,20 @@ jobs:
       # ------------------------------------------------------------
       # Build APK
       # ------------------------------------------------------------
+
+      - name: Accept Buildozer Android SDK licenses
+        run: |
+          yes | ~/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager \
+            --sdk_root=~/.buildozer/android/platform/android-sdk \
+            --licenses || true
+
+
+      - name: Install Android Build Tools
+        run: |
+          yes | ~/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager \
+            --sdk_root=~/.buildozer/android/platform/android-sdk \
+            "build-tools;37.0.0"
+    
       - name: Build APK
         working-directory: app/psl_app
         env:
