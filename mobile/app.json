@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "دستیار زبان اشاره",
+    "slug": "dastyar-offline",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "dastyar",
+    "assetBundlePatterns": [
+      "assets/models/*"
+    ],
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "دستیار برای تشخیص زبان اشاره به دوربین نیاز دارد."
+        }
+      ]
+    ],
+    "android": {
+      "package": "com.dastyar.signlanguage",
+      "permissions": [
+        "CAMERA"
+      ],
+      "enableProguardInReleaseBuilds": true,
+      "enableShrinkResourcesInReleaseBuilds": true
+    }
+  }
+}
