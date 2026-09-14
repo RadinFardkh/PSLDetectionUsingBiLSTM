@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths:
       - 'app/mobile/**'
-      - 'app/.github/workflows/build-apk.yaml'
+      - '.github/workflows/build-apk.yaml'
 
 env:
   EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: mobile
+        working-directory: app/mobile
 
     steps:
       - name: Checkout repository
