@@ -3,17 +3,17 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - 'app/mobile/**'
-      - '.github/workflows/build-apk.yaml'
-
-env:
-  EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      - "app/mobile/**"
+      - ".github/workflows/build-apk.yaml"
 
 jobs:
-  build-apk:
+  build:
+    name: Build offline APK
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: app/mobile
@@ -27,20 +27,26 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install mobile dependencies
+      - name: Install dependencies
         run: npm install
 
-      - name: Validate Expo configuration
+      - name: Validate Expo project
         run: npx expo config --type public
 
-      - name: Link Expo project
-        run: npx eas-cli@latest init --non-interactive
+      - name: Initialize EAS project
+        run: npx eas-cli@latest project:init --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Build signed APK with EAS
+      - name: Build APK
         run: npx eas-cli@latest build --platform android --profile preview --non-interactive --wait
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
       - name: Download APK
         run: npx eas-cli@latest build:download --platform android --profile preview --latest --output dastyar-offline.apk
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -48,15 +54,3 @@ jobs:
           name: dastyar-offline-apk
           path: app/mobile/dastyar-offline.apk
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Add build summary
-        run: |
-          echo "## Android APK" >> "$GITHUB_STEP_SUMMARY"
-          echo "The APK was built by EAS and uploaded as the dastyar-offline-apk artifact." >> "$GITHUB_STEP_SUMMARY"
-          echo "Model is bundled locally; no inference server is used." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload failure logs
-        if: failure()
-        run: npx eas-cli@latest build:list --platform android --limit 1
-        continue-on-error: true
