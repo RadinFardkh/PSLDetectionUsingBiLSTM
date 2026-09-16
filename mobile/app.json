@@ -20,10 +20,18 @@
     "android": {
       "package": "com.dastyar.signlanguage",
       "permissions": [
-        "CAMERA"
+        "CAMERA",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ],
       "enableProguardInReleaseBuilds": true,
       "enableShrinkResourcesInReleaseBuilds": true
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2f084a56-5a55-4700-9ffc-519579932c8a"
+      }
+    },
+    "owner": "lorduniblesseds-team"
   }
 }
