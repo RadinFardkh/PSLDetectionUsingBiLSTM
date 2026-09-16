@@ -3,20 +3,23 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - "app/mobile/**"
-      - ".github/workflows/build-apk.yaml"
+      - 'mobile/**'
+      - '.github/workflows/build-apk.yaml'
+
+permissions:
+  contents: read
+
+env:
+  EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
 jobs:
-  build:
-    name: Build offline APK
+  build-apk:
     runs-on: ubuntu-latest
-
     defaults:
       run:
-        working-directory: app/mobile
+        working-directory: mobile
 
     steps:
       - name: Checkout repository
@@ -27,30 +30,95 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install mobile dependencies and generate lockfile
+        run: npm install --no-audit --no-fund
 
-      - name: Validate Expo project
+      - name: Remove stale EAS project ID
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = 'app.json';
+            const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+            if (config.expo?.extra?.eas?.projectId) {
+              delete config.expo.extra.eas.projectId;
+              if (Object.keys(config.expo.extra.eas).length === 0) delete config.expo.extra.eas;
+              if (Object.keys(config.expo.extra || {}).length === 0) delete config.expo.extra;
+              fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\\n');
+            }
+          "
+
+      - name: Validate Expo configuration
         run: npx expo config --type public
 
-      - name: Initialize EAS project
-        run: npx eas-cli@latest project:init --non-interactive
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      - name: Initialize or link Expo project
+        run: npx eas-cli@latest project:init --force --account lorduniblesseds-team --non-interactive
 
-      - name: Build APK
-        run: npx eas-cli@latest build --platform android --profile preview --non-interactive --wait
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      - name: Verify generated EAS project ID
+        run: |
+          PROJECT_ID=$(npx expo config --type introspect | jq -r '.extra.eas.projectId // empty')
+          if ! echo "$PROJECT_ID" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
+            echo "EAS did not generate a valid project ID: $PROJECT_ID" >&2
+            exit 1
+          fi
+          echo "Using EAS project: $PROJECT_ID"
+
+
+      - name: Build signed APK with EAS
+        id: eas-build
+        run: |
+          # 'eas build:download' only handles simulator/dev-client builds, so the
+          # regular cloud artifact URL is read from the build's own --json output
+          # (falling back to 'build:view' for the definitive artifact link) and
+          # downloaded with curl instead.
+          BUILD_OUTPUT_JSON=$(npx eas-cli@latest build --platform android --profile preview --non-interactive --wait --json)
+          BUILD_ID=$(echo "$BUILD_OUTPUT_JSON" | jq -r 'if type == "array" then .[0].id else .id end')
+          BUILD_STATUS=$(echo "$BUILD_OUTPUT_JSON" | jq -r 'if type == "array" then .[0].status else .status end')
+
+          if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ]; then
+            echo "Could not determine the EAS build ID from the build output." >&2
+            echo "$BUILD_OUTPUT_JSON" >&2
+            exit 1
+          fi
+
+          if [ "$BUILD_STATUS" != "FINISHED" ] && [ "$BUILD_STATUS" != "finished" ]; then
+            echo "EAS build did not finish successfully (status: $BUILD_STATUS)." >&2
+            exit 1
+          fi
+
+          echo "build-id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
       - name: Download APK
-        run: npx eas-cli@latest build:download --platform android --profile preview --latest --output dastyar-offline.apk
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          BUILD_ID: ${{ steps.eas-build.outputs.build-id }}
+        run: |
+          BUILD_VIEW_JSON=$(npx eas-cli@latest build:view "$BUILD_ID" --json)
+          BUILD_URL=$(echo "$BUILD_VIEW_JSON" | jq -r '.artifacts.buildUrl // empty')
+
+          if [ -z "$BUILD_URL" ]; then
+            echo "No downloadable artifact URL was found for build $BUILD_ID." >&2
+            echo "$BUILD_VIEW_JSON" >&2
+            exit 1
+          fi
+
+          curl -fsSL -o dastyar-offline.apk "$BUILD_URL"
+          ls -lh dastyar-offline.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: dastyar-offline-apk
-          path: app/mobile/dastyar-offline.apk
+          path: mobile/dastyar-offline.apk
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Add build summary
+        run: |
+          echo "## Android APK" >> "$GITHUB_STEP_SUMMARY"
+          echo "The APK was built by EAS and uploaded as the dastyar-offline-apk artifact." >> "$GITHUB_STEP_SUMMARY"
+          echo "Model is bundled locally; no inference server is used." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload failure logs
+        if: failure()
+        run: |
+          echo "The EAS build failed. Check the failed EAS build URL in the previous step." >> "$GITHUB_STEP_SUMMARY"
+        continue-on-error: true
